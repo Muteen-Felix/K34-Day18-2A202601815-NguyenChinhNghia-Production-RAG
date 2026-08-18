@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Production RAG Pipeline — Bài tập NHÓM: ghép M1+M2+M3+M4."""
+"""Production RAG Pipeline — Bài tập cá nhân: ghép M1+M2+M3+M4."""
 
 import os, sys, time
 
@@ -57,6 +57,48 @@ def build_pipeline():
     return search, reranker
 
 
+def _generate_answer(query: str, contexts: list[str]) -> str:
+    """Generate answer using LLM — hỗ trợ Google Gemini + OpenAI."""
+    if not contexts:
+        return "Không tìm thấy thông tin."
+
+    context_str = "\n\n".join(contexts)
+    system_prompt = "Trả lời CHỈ dựa trên context. Nếu không có → nói 'Không tìm thấy.'"
+    user_prompt = f"Context:\n{context_str}\n\nCâu hỏi: {query}"
+
+    # Thử Google Gemini trước
+    google_key = os.getenv("GOOGLE_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
+    if google_key:
+        try:
+            from google import genai
+            client = genai.Client(api_key=google_key)
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=f"{system_prompt}\n\n{user_prompt}"
+            )
+            if response and response.text:
+                return response.text.strip()
+        except Exception as e:
+            print(f"  ⚠️  Gemini generation failed: {e}", flush=True)
+
+    # Fallback OpenAI
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+    if openai_key:
+        try:
+            from openai import OpenAI
+            client = OpenAI()
+            resp = client.chat.completions.create(model="gpt-4o-mini", messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ])
+            return resp.choices[0].message.content
+        except Exception as e:
+            print(f"  ⚠️  OpenAI generation failed: {e}", flush=True)
+
+    # Nếu không có LLM → trả context đầu tiên
+    return contexts[0]
+
+
 def run_query(query: str, search: HybridSearch, reranker: CrossEncoderReranker) -> tuple[str, list[str]]:
     """Run single query through pipeline."""
     results = search.search(query)
@@ -64,22 +106,7 @@ def run_query(query: str, search: HybridSearch, reranker: CrossEncoderReranker) 
     reranked = reranker.rerank(query, docs, top_k=RERANK_TOP_K)
     contexts = [r.text for r in reranked] if reranked else [r.text for r in results[:3]]
 
-    from config import OPENAI_API_KEY
-    if OPENAI_API_KEY and contexts:
-        try:
-            from openai import OpenAI
-            client = OpenAI()
-            context_str = "\n\n".join(contexts)
-            resp = client.chat.completions.create(model="gpt-4o-mini", messages=[
-                {"role": "system", "content": "Trả lời CHỈ dựa trên context. Nếu không có → nói 'Không tìm thấy.'"},
-                {"role": "user", "content": f"Context:\n{context_str}\n\nCâu hỏi: {query}"},
-            ])
-            answer = resp.choices[0].message.content
-        except Exception as e:
-            print(f"  ⚠️  LLM generation failed: {e}", flush=True)
-            answer = contexts[0]
-    else:
-        answer = contexts[0] if contexts else "Không tìm thấy thông tin."
+    answer = _generate_answer(query, contexts)
     return answer, contexts
 
 

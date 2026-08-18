@@ -34,27 +34,46 @@ def main():
     test_set = load_test_set()
     questions, answers, all_contexts, ground_truths = [], [], [], []
 
-    from config import OPENAI_API_KEY
-    llm_client = None
-    if OPENAI_API_KEY:
-        from openai import OpenAI
-        llm_client = OpenAI()
+    from config import OPENAI_API_KEY, GOOGLE_API_KEY
 
     for i, item in enumerate(test_set):
         results = search.search(item["question"], top_k=3, collection=NAIVE_COLLECTION)
         contexts = [r.text for r in results]
 
-        if llm_client and contexts:
-            try:
-                context_str = "\n\n".join(contexts)
-                resp = llm_client.chat.completions.create(model="gpt-4o-mini", messages=[
-                    {"role": "system", "content": "Trả lời CHỈ dựa trên context. Nếu không có → nói 'Không tìm thấy.'"},
-                    {"role": "user", "content": f"Context:\n{context_str}\n\nCâu hỏi: {item['question']}"},
-                ])
-                answer = resp.choices[0].message.content
-            except Exception:
-                answer = contexts[0]
-        else:
+        answer = None
+        if contexts:
+            context_str = "\n\n".join(contexts)
+            system_prompt = "Trả lời CHỈ dựa trên context. Nếu không có → nói 'Không tìm thấy.'"
+            user_prompt = f"Context:\n{context_str}\n\nCâu hỏi: {item['question']}"
+
+            # Thử Google Gemini trước
+            if GOOGLE_API_KEY and answer is None:
+                try:
+                    from google import genai
+                    client = genai.Client(api_key=GOOGLE_API_KEY)
+                    response = client.models.generate_content(
+                        model="gemini-3.6-flash",
+                        contents=f"{system_prompt}\n\n{user_prompt}"
+                    )
+                    if response and response.text:
+                        answer = response.text.strip()
+                except Exception:
+                    pass
+
+            # Fallback OpenAI
+            if OPENAI_API_KEY and answer is None:
+                try:
+                    from openai import OpenAI
+                    client = OpenAI()
+                    resp = client.chat.completions.create(model="gpt-4o-mini", messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ])
+                    answer = resp.choices[0].message.content
+                except Exception:
+                    pass
+
+        if answer is None:
             answer = contexts[0] if contexts else "Không tìm thấy."
 
         answers.append(answer)
